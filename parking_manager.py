@@ -1,6 +1,7 @@
-"""
+﻿"""
 Parking Automation & Business Logic Manager
-Orchestrates vehicle entry, ticket generation, rate calculation, and exit checkout.
+Orchestrates vehicle entry, ticket generation, rate calculation, exit checkout,
+and automated receipt formatting.
 """
 
 import uuid
@@ -108,6 +109,83 @@ class ParkingManager:
             "hours": hours_parked,
             "total_fee": round(total_fee, 2)
         }
+
+    @staticmethod
+    def generate_receipt(ticket_code: str) -> str:
+        """Generates a clean formatted ASCII transaction receipt."""
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT s.*, v.license_plate, v.vehicle_type, v.owner_name, p.spot_number, p.floor_number
+            FROM parking_sessions s
+            JOIN vehicles v ON s.vehicle_id = v.vehicle_id
+            JOIN parking_spots p ON s.spot_id = p.spot_id
+            WHERE s.ticket_code = ?
+        """, (ticket_code.strip().upper(),))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row:
+            return f"Receipt Error: Ticket {ticket_code} not found."
+
+        owner = row["owner_name"] or "Valued Guest"
+        exit_time = row["exit_time"] or "In Progress"
+        duration = f"{row['duration_hours']:.1f} hrs" if row["duration_hours"] else "Active"
+        fee = f"${row['total_fee']:.2f}" if row["total_fee"] is not None else "$0.00"
+
+        receipt = f"""
++--------------------------------------------------+
+|           SMART PARKING AUTOMATION RECEIPT       |
++--------------------------------------------------+
+  Ticket ID      : {row['ticket_code']}
+  Status         : {row['payment_status']}
+  Guest Name     : {owner}
+  Vehicle Plate  : {row['license_plate']} ({row['vehicle_type']})
+  Assigned Spot  : {row['spot_number']} (Floor {row['floor_number']})
+  Entry Time     : {row['entry_time']}
+  Exit Time      : {exit_time}
+  Duration       : {duration}
+  Hourly Rate    : ${row['hourly_rate']:.2f}/hr
+----------------------------------------------------
+  TOTAL BILLED   : {fee}
++--------------------------------------------------+
+|         Thank you for choosing Smart Parking!    |
++--------------------------------------------------+
+""".strip()
+        return receipt
+
+    @staticmethod
+    def get_occupancy_matrix() -> dict:
+        """Returns floor-by-floor capacity and vacancy metrics."""
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT 
+                floor_number,
+                COUNT(*) as total_spots,
+                SUM(is_occupied) as occupied_spots,
+                COUNT(*) - SUM(is_occupied) as available_spots
+            FROM parking_spots
+            GROUP BY floor_number
+            ORDER BY floor_number ASC
+        """)
+        floors = []
+        for r in cursor.fetchall():
+            tot = r["total_spots"]
+            occ = r["occupied_spots"]
+            utilization = round((occ / tot * 100.0), 1) if tot > 0 else 0.0
+            floors.append({
+                "floor": r["floor_number"],
+                "total": tot,
+                "occupied": occ,
+                "available": r["available_spots"],
+                "utilization_pct": utilization
+            })
+
+        conn.close()
+        return {"floors": floors}
 
     @staticmethod
     def get_live_overview() -> dict:
